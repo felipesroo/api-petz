@@ -1,4 +1,4 @@
-playwright
-pandas
 fastapi
 uvicorn
+requests
+beautifulsoup4
