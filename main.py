@@ -1,126 +1,112 @@
 from fastapi import FastAPI
 from playwright.async_api import async_playwright
 import json
-import random
 import asyncio
-import re
 
 app = FastAPI()
 
 @app.get("/")
 def home():
-    return {"status": "Robô Petz V4 (Detetive) 🕵️"}
+    return {"status": "Robô Petz Sniper Ativo 🎯"}
 
 @app.get("/scrape")
 async def rodar_robo():
-    print("Iniciando modo Detetive...")
+    print("Iniciando modo Sniper (JSON-LD)...")
     async with async_playwright() as p:
+        # Lança navegador VISÍVEL para você ver se está abrindo
+        # Se funcionar, depois você muda headless=True
         browser = await p.chromium.launch(
-            headless=True,
+            headless=True, # Mude para False se quiser ver a mágica
             args=[
                 '--no-sandbox', 
                 '--disable-setuid-sandbox',
                 '--disable-blink-features=AutomationControlled',
-                '--disable-infobars',
-                '--window-position=0,0',
-                '--ignore-certificate-errors',
-                '--ignore-ssl-errors',
                 '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
             ]
         )
         
-        context = await browser.new_context(
-            viewport={'width': 1366, 'height': 768}, # Resolução padrão de notebook
-            locale='pt-BR',
-            timezone_id='America/Sao_Paulo'
-        )
-        
+        context = await browser.new_context(viewport={'width': 1920, 'height': 1080})
         page = await context.new_page()
-        
-        # Camuflagem Manual
+
+        # Camuflagem básica
         await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
         lista_produtos = []
         try:
             print("Acessando site...")
-            await page.goto("https://www.petz.com.br/cachorro/racao/racao-seca", timeout=90000)
+            await page.goto("https://www.petz.com.br/cachorro/racao/racao-seca", timeout=60000)
+            
+            # Espera carregar
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except:
+                pass
 
-            # Espera um pouco mais para garantir que os preços carreguem
-            await page.wait_for_timeout(5000)
-
-            print("Rolando página...")
-            for _ in range(3): 
-                await page.mouse.wheel(0, 1000)
-                await asyncio.sleep(2)
-
-            # ESTRATÉGIA NOVA: Pegar todos os links de produtos
-            # A Petz geralmente usa tags <a> com links que contém '/produto/'
-            cards = await page.query_selector_all('a[href*="/produto/"]')
-            print(f"Links de produtos encontrados: {len(cards)}")
-
-            links_visitados = set()
-
-            for card in cards:
+            # ESTRATÉGIA SNIPER: Buscar dados estruturados (JSON-LD)
+            # A Petz geralmente coloca os produtos num script hidden para o Google
+            scripts = await page.query_selector_all('script[type="application/ld+json"]')
+            print(f"Scripts JSON encontrados: {len(scripts)}")
+            
+            for script in scripts:
                 try:
-                    # 1. Extrair Link
-                    link_relativo = await card.get_attribute('href')
-                    if not link_relativo: continue
+                    conteudo = await script.inner_text()
+                    dados = json.loads(conteudo)
                     
-                    full_link = "https://www.petz.com.br" + link_relativo if not link_relativo.startswith('http') else link_relativo
-                    
-                    # Evita duplicatas (o site tem vários links pro mesmo produto)
-                    if full_link in links_visitados:
-                        continue
-                    links_visitados.add(full_link)
+                    # Procura por listas de produtos dentro do JSON
+                    if isinstance(dados, dict) and dados.get('@type') == 'ItemList':
+                        items = dados.get('itemListElement', [])
+                        for item in items:
+                            produto = item.get('item', {})
+                            # Extrai dados limpos
+                            nome = produto.get('name', 'Sem Nome')
+                            url = produto.get('url', '')
+                            # Preço as vezes vem em 'offers'
+                            oferta = produto.get('offers', {})
+                            preco = oferta.get('price', '0') if isinstance(oferta, dict) else '0'
+                            imagem = produto.get('image', '')
+                            
+                            # Corrige URL se for relativa
+                            if url and not url.startswith('http'):
+                                url = "https://www.petz.com.br" + url
 
-                    # 2. Extrair Texto Completo do Card (Nome e Preço costumam estar dentro do link ou perto)
-                    texto_completo = await card.inner_text()
-                    
-                    # Se o texto do link for muito curto, tentamos pegar o elemento pai (o card inteiro)
-                    if len(texto_completo) < 10:
-                        pai = await card.query_selector('xpath=..') # Sobe um nível
-                        if pai:
-                            texto_completo = await pai.inner_text()
-
-                    # 3. Processar Nome (Geralmente é a primeira linha ou texto longo)
-                    linhas = [l for l in texto_completo.split('\n') if len(l) > 3]
-                    nome = linhas[0] if linhas else "Nome não detectado"
-                    
-                    # Tenta limpar termos comuns que não são nome
-                    if "R$" in nome or "%" in nome:
-                         # Se a primeira linha for preço, tenta a segunda
-                         nome = linhas[1] if len(linhas) > 1 else nome
-
-                    # 4. Processar Preço (Procura por R$)
-                    preco = "Esgotado/Sem Preço"
-                    # Regex para achar valor monetário: R$ 100,00
-                    match = re.search(r'R\$\s?(\d+[\.,]\d{2})', texto_completo)
-                    if match:
-                        preco = match.group(1)
-                    
-                    # 5. Imagem (Procura tag img dentro)
-                    imagem = ""
-                    img_tag = await card.query_selector('img')
-                    if img_tag:
-                        imagem = await img_tag.get_attribute('src')
-                    
-                    # Só adiciona se tiver nome válido
-                    if nome and "Nome não detectado" not in nome:
-                        lista_produtos.append({
-                            "nome": nome.strip(),
-                            "preco": preco,
-                            "link": full_link,
-                            "imagem": imagem
-                        })
-
-                except Exception as e:
+                            if nome and url:
+                                lista_produtos.append({
+                                    "nome": nome,
+                                    "preco": str(preco),
+                                    "link": url,
+                                    "imagem": imagem
+                                })
+                except:
                     continue
             
+            # PLANO B: Se o JSON falhar, tenta o seletor visual SUPER GENÉRICO
             if len(lista_produtos) == 0:
-                 return [{"erro": "Site carregou mas seletor falhou. Estrutura mudou."}]
+                print("JSON falhou, tentando visual...")
+                # Pega qualquer CARD que tenha preço
+                cards = await page.query_selector_all('div[class*="card"], li[class*="product"]')
+                
+                for card in cards:
+                    texto = await card.inner_text()
+                    if "R$" in texto:
+                        # Pega o primeiro link que achar dentro do card
+                        link_el = await card.query_selector('a')
+                        link = await link_el.get_attribute('href') if link_el else ""
+                        if link:
+                            lista_produtos.append({
+                                "nome": "Produto Detectado (Visual)",
+                                "preco": "Ver no Site",
+                                "link": "https://www.petz.com.br" + link,
+                                "imagem": ""
+                            })
+
+            if len(lista_produtos) == 0:
+                # DEBUG: Tira um print para você ver o que o robô está vendo
+                await page.screenshot(path="debug_petz.png")
+                titulo = await page.title()
+                return [{"erro": "Bloqueio Total. Verifique debug_petz.png", "titulo": titulo}]
 
         except Exception as e:
-            return [{"erro": f"Erro interno: {str(e)}"}]
+            return [{"erro": f"Erro fatal: {str(e)}"}]
             
         await browser.close()
-        return lista_produtos[:50] # Limita a 50 itens para não travar
+        return lista_produtos[:50]
