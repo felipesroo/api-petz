@@ -2,3 +2,4 @@ playwright
 pandas
 fastapi
 uvicorn
+playwright-stealth
