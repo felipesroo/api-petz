@@ -1,7 +1,5 @@
 from fastapi import FastAPI
 from playwright.async_api import async_playwright
-# Importa a camuflagem
-from playwright_stealth import stealth_async
 import json
 import random
 import asyncio
@@ -10,19 +8,19 @@ app = FastAPI()
 
 @app.get("/")
 def home():
-    return {"status": "Robô Petz Stealth Ativo 🥷"}
+    return {"status": "Robô Petz V3 (Manual Stealth) 🥷"}
 
 @app.get("/scrape")
 async def rodar_robo():
-    print("Iniciando modo Stealth...")
+    print("Iniciando modo Stealth Manual...")
     async with async_playwright() as p:
-        # Argumentos para remover avisos de automação do Chrome
+        # Argumentos poderosos para esconder o robô
         browser = await p.chromium.launch(
             headless=True,
             args=[
                 '--no-sandbox', 
                 '--disable-setuid-sandbox',
-                '--disable-blink-features=AutomationControlled',
+                '--disable-blink-features=AutomationControlled', # Oculta flag de automação
                 '--disable-infobars',
                 '--window-position=0,0',
                 '--ignore-certificate-errors',
@@ -31,7 +29,6 @@ async def rodar_robo():
             ]
         )
         
-        # Cria contexto com permissões de geolocalização e viewport aleatório para parecer humano
         context = await browser.new_context(
             viewport={'width': 1920, 'height': 1080},
             locale='pt-BR',
@@ -41,33 +38,39 @@ async def rodar_robo():
         
         page = await context.new_page()
         
-        # --- A MÁGICA DA CAMUFLAGEM AQUI ---
-        await stealth_async(page)
-        # -----------------------------------
+        # --- CAMUFLAGEM MANUAL (Sem biblioteca) ---
+        # Engana o site dizendo que não tem driver de automação
+        await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        # ------------------------------------------
 
         lista_produtos = []
         try:
             print("Acessando site...")
-            # Headers extras para parecer requisição real
+            # Cabeçalhos de navegador real
             await page.set_extra_http_headers({
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
                 "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-                "Referer": "https://www.google.com/"
+                "Referer": "https://www.google.com/",
+                "Upgrade-Insecure-Requests": "1",
+                "Sec-Ch-Ua": '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Windows"'
             })
 
-            await page.goto("https://www.petz.com.br/cachorro/racao/racao-seca", timeout=120000)
+            # Aumentei o timeout para garantir
+            await page.goto("https://www.petz.com.br/cachorro/racao/racao-seca", timeout=90000)
 
-            # Espera carregar
+            # Espera inteligente
             try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
+                await page.wait_for_load_state("domcontentloaded", timeout=15000)
             except:
                 pass
 
-            # Scroll humanizado (varia o tempo)
             print("Rolando página...")
-            for _ in range(4): 
-                await page.mouse.wheel(0, random.randint(1000, 2000))
-                await asyncio.sleep(random.uniform(2, 4))
+            # Scroll mais humano
+            for _ in range(3): 
+                await page.mouse.wheel(0, random.randint(800, 1500))
+                await asyncio.sleep(random.uniform(3, 5))
 
             cards = await page.query_selector_all('ptz-card')
             print(f"Cards encontrados: {len(cards)}")
@@ -108,11 +111,9 @@ async def rodar_robo():
                 except:
                     continue
             
-            # Verificação de bloqueio
             if len(lista_produtos) == 0:
                 titulo = await page.title()
-                # Se ainda der bloqueio, retornamos o título para saber
-                return [{"erro": "Bloqueado ou Vazio", "titulo_pagina": titulo}]
+                return [{"erro": "Ainda bloqueado ou site mudou", "titulo_pagina": titulo}]
 
         except Exception as e:
             return [{"erro": f"Erro interno: {str(e)}"}]
