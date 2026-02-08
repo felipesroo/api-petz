@@ -3,24 +3,24 @@ from playwright.async_api import async_playwright
 import json
 import random
 import asyncio
+import re
 
 app = FastAPI()
 
 @app.get("/")
 def home():
-    return {"status": "Robô Petz V3 (Manual Stealth) 🥷"}
+    return {"status": "Robô Petz V4 (Detetive) 🕵️"}
 
 @app.get("/scrape")
 async def rodar_robo():
-    print("Iniciando modo Stealth Manual...")
+    print("Iniciando modo Detetive...")
     async with async_playwright() as p:
-        # Argumentos poderosos para esconder o robô
         browser = await p.chromium.launch(
             headless=True,
             args=[
                 '--no-sandbox', 
                 '--disable-setuid-sandbox',
-                '--disable-blink-features=AutomationControlled', # Oculta flag de automação
+                '--disable-blink-features=AutomationControlled',
                 '--disable-infobars',
                 '--window-position=0,0',
                 '--ignore-certificate-errors',
@@ -30,93 +30,97 @@ async def rodar_robo():
         )
         
         context = await browser.new_context(
-            viewport={'width': 1920, 'height': 1080},
+            viewport={'width': 1366, 'height': 768}, # Resolução padrão de notebook
             locale='pt-BR',
-            timezone_id='America/Sao_Paulo',
-            permissions=['geolocation']
+            timezone_id='America/Sao_Paulo'
         )
         
         page = await context.new_page()
         
-        # --- CAMUFLAGEM MANUAL (Sem biblioteca) ---
-        # Engana o site dizendo que não tem driver de automação
+        # Camuflagem Manual
         await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        # ------------------------------------------
 
         lista_produtos = []
         try:
             print("Acessando site...")
-            # Cabeçalhos de navegador real
-            await page.set_extra_http_headers({
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-                "Referer": "https://www.google.com/",
-                "Upgrade-Insecure-Requests": "1",
-                "Sec-Ch-Ua": '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
-                "Sec-Ch-Ua-Mobile": "?0",
-                "Sec-Ch-Ua-Platform": '"Windows"'
-            })
-
-            # Aumentei o timeout para garantir
             await page.goto("https://www.petz.com.br/cachorro/racao/racao-seca", timeout=90000)
 
-            # Espera inteligente
-            try:
-                await page.wait_for_load_state("domcontentloaded", timeout=15000)
-            except:
-                pass
+            # Espera um pouco mais para garantir que os preços carreguem
+            await page.wait_for_timeout(5000)
 
             print("Rolando página...")
-            # Scroll mais humano
             for _ in range(3): 
-                await page.mouse.wheel(0, random.randint(800, 1500))
-                await asyncio.sleep(random.uniform(3, 5))
+                await page.mouse.wheel(0, 1000)
+                await asyncio.sleep(2)
 
-            cards = await page.query_selector_all('ptz-card')
-            print(f"Cards encontrados: {len(cards)}")
+            # ESTRATÉGIA NOVA: Pegar todos os links de produtos
+            # A Petz geralmente usa tags <a> com links que contém '/produto/'
+            cards = await page.query_selector_all('a[href*="/produto/"]')
+            print(f"Links de produtos encontrados: {len(cards)}")
+
+            links_visitados = set()
 
             for card in cards:
                 try:
-                    nome_el = await card.query_selector('.ptz-card-label-left')
-                    nome = await nome_el.inner_text() if nome_el else "Sem Nome"
+                    # 1. Extrair Link
+                    link_relativo = await card.get_attribute('href')
+                    if not link_relativo: continue
+                    
+                    full_link = "https://www.petz.com.br" + link_relativo if not link_relativo.startswith('http') else link_relativo
+                    
+                    # Evita duplicatas (o site tem vários links pro mesmo produto)
+                    if full_link in links_visitados:
+                        continue
+                    links_visitados.add(full_link)
 
-                    preco_el = await card.query_selector('.ptz-card-price')
-                    preco = "0"
-                    if preco_el:
-                        txt = await preco_el.inner_text()
-                        preco = txt.replace('R$', '').replace('A partir de', '').split('\n')[0].strip()
+                    # 2. Extrair Texto Completo do Card (Nome e Preço costumam estar dentro do link ou perto)
+                    texto_completo = await card.inner_text()
+                    
+                    # Se o texto do link for muito curto, tentamos pegar o elemento pai (o card inteiro)
+                    if len(texto_completo) < 10:
+                        pai = await card.query_selector('xpath=..') # Sobe um nível
+                        if pai:
+                            texto_completo = await pai.inner_text()
 
-                    link = ""
+                    # 3. Processar Nome (Geralmente é a primeira linha ou texto longo)
+                    linhas = [l for l in texto_completo.split('\n') if len(l) > 3]
+                    nome = linhas[0] if linhas else "Nome não detectado"
+                    
+                    # Tenta limpar termos comuns que não são nome
+                    if "R$" in nome or "%" in nome:
+                         # Se a primeira linha for preço, tenta a segunda
+                         nome = linhas[1] if len(linhas) > 1 else nome
+
+                    # 4. Processar Preço (Procura por R$)
+                    preco = "Esgotado/Sem Preço"
+                    # Regex para achar valor monetário: R$ 100,00
+                    match = re.search(r'R\$\s?(\d+[\.,]\d{2})', texto_completo)
+                    if match:
+                        preco = match.group(1)
+                    
+                    # 5. Imagem (Procura tag img dentro)
                     imagem = ""
-                    dados = await card.get_attribute('info-badges-list')
-                    if dados:
-                        j = json.loads(dados)
-                        variacao = j.get('variations', [{}])[0]
-                        url_p = variacao.get('url')
-                        img_p = variacao.get('thumbnail')
-                        link = "https://" + url_p if url_p else ""
-                        imagem = img_p if img_p else ""
+                    img_tag = await card.query_selector('img')
+                    if img_tag:
+                        imagem = await img_tag.get_attribute('src')
+                    
+                    # Só adiciona se tiver nome válido
+                    if nome and "Nome não detectado" not in nome:
+                        lista_produtos.append({
+                            "nome": nome.strip(),
+                            "preco": preco,
+                            "link": full_link,
+                            "imagem": imagem
+                        })
 
-                    if not imagem:
-                        img_tag = await card.query_selector('img')
-                        if img_tag:
-                            imagem = await img_tag.get_attribute('src')
-
-                    lista_produtos.append({
-                        "nome": nome.strip(),
-                        "preco": preco,
-                        "link": link,
-                        "imagem": imagem
-                    })
-                except:
+                except Exception as e:
                     continue
             
             if len(lista_produtos) == 0:
-                titulo = await page.title()
-                return [{"erro": "Ainda bloqueado ou site mudou", "titulo_pagina": titulo}]
+                 return [{"erro": "Site carregou mas seletor falhou. Estrutura mudou."}]
 
         except Exception as e:
             return [{"erro": f"Erro interno: {str(e)}"}]
             
         await browser.close()
-        return lista_produtos
+        return lista_produtos[:50] # Limita a 50 itens para não travar
