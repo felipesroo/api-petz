@@ -16,19 +16,19 @@ def home():
 
 @app.get("/scrape")
 def rodar_robo():
-    # URL Exata que você mandou
+    # URL Exata das Ofertas do Dia
     base_url = "https://www.amazon.com.br/s?k=ofertas+do+dia&__mk_pt_BR=%C3%85M%C3%85%C5%BD%C3%95%C3%91&crid=2ZJ0E5VVQA848&sprefix=ofertas+do+di%2Caps%2C234&ref=nb_sb_noss_2"
     
-    # Vamos ler 3 páginas para encher a lista (Total aprox: 48 a 60 produtos)
+    # Quantidade de páginas para ler
     MAX_PAGINAS = 3
     
     lista_global = []
-    print(f"Iniciando busca de 'Ofertas do Dia' (3 Páginas)...")
+    print(f"Iniciando busca de 'Ofertas do Dia' ({MAX_PAGINAS} Páginas)...")
 
     for pagina in range(1, MAX_PAGINAS + 1):
         print(f"--- Processando Página {pagina} ---")
         
-        # Lógica de Paginação: Se for pag 2, adiciona &page=2 no final
+        # Lógica de Paginação
         if pagina == 1:
             url_atual = base_url
         else:
@@ -38,13 +38,12 @@ def rodar_robo():
             'api_key': API_KEY, 
             'url': url_atual, 
             'country_code': 'br',
-            'device_type': 'mobile', # Mobile é mais rápido para listas
-            'premium': 'true',       # Obrigatório para Amazon
-            'render': 'false'        # Economiza créditos
+            'device_type': 'mobile', 
+            'premium': 'true',       
+            'render': 'false'        
         }
 
         try:
-            # Timeout de 60s por página
             r = requests.get('http://api.scraperapi.com', params=payload, timeout=60)
             
             if r.status_code != 200:
@@ -53,7 +52,6 @@ def rodar_robo():
 
             soup = BeautifulSoup(r.text, 'html.parser')
             
-            # SELETOR PADRÃO DE BUSCA
             # Procura os containers de resultado de busca
             cards = soup.select('div[data-component-type="s-search-result"]')
             
@@ -64,7 +62,6 @@ def rodar_robo():
                 seen_cards = set()
                 for l in links:
                     pai = l.find_parent('div')
-                    # Pega o div pai que parece ser um card
                     if pai and pai not in seen_cards:
                          cards.append(pai)
                          seen_cards.add(pai)
@@ -87,11 +84,9 @@ def rodar_robo():
                     if not match: continue
                     prod_id = match.group(1)
 
-                    # Evita duplicatas na mesma página
                     if prod_id in ids_vistos: continue
                     ids_vistos.add(prod_id)
                     
-                    # Evita duplicatas globais (se o item apareceu na pag anterior)
                     if any(p['link'].endswith(prod_id) for p in lista_global): continue
 
                     full_link = f"https://www.amazon.com.br/dp/{prod_id}"
@@ -106,16 +101,36 @@ def rodar_robo():
                     elif img and img.get('alt'):
                         nome = img.get('alt')
 
-                    # 3. Preço (Prioridade para .a-offscreen)
+                    # 3. Preço (CORRIGIDO AQUI)
                     preco = "Ver no site"
                     price_tag = card.select_one('.a-price .a-offscreen')
                     
                     if price_tag:
                         preco = price_tag.get_text(strip=True)
                     else:
-                        # Tenta pegar preço visual quebrado (R$ 100 , 00)
                         whole = card.select_one('.a-price-whole')
                         frac = card.select_one('.a-price-fraction')
                         if whole:
                             v = whole.get_text(strip=True).replace('.', '')
-                            c = frac.get_text(strip=True) if
+                            # A LINHA QUE ESTAVA DANDO ERRO AGORA ESTÁ COMPLETA ABAIXO:
+                            c = frac.get_text(strip=True) if frac else "00"
+                            preco = f"R$ {v},{c}"
+
+                    # 4. Imagem
+                    imagem = img.get('src') if img else ""
+                    
+                    # 5. Desconto
+                    desconto = ""
+                    texto_card = card.get_text().lower()
+                    match_desc = re.search(r'(\d+)%\s?(off|de desconto)', texto_card)
+                    if match_desc:
+                        desconto = f"-{match_desc.group(1)}%"
+
+                    if "R$" in preco:
+                        lista_global.append({
+                            "pagina": pagina,
+                            "nome": nome,
+                            "preco": preco,
+                            "desconto": desconto,
+                            "link": full_link,
+                            "imagem": imagem
