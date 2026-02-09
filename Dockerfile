@@ -1,5 +1,5 @@
-# Usa a imagem oficial do Playwright com Python (já tem navegadores!)
-FROM mcr.microsoft.com/playwright/python:v1.41.0-jammy
+# Usa uma imagem Python leve (sem navegadores pesados)
+FROM python:3.9-slim
 
 # Define pasta de trabalho
 WORKDIR /app
@@ -7,14 +7,11 @@ WORKDIR /app
 # Copia os arquivos
 COPY . .
 
-# Instala as dependências Python
+# Instala apenas requests, beautifulsoup e fastapi
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Instala os navegadores do Playwright (garantia extra)
-RUN playwright install chromium
 
 # Expõe a porta 80
 EXPOSE 80
 
-# Comando para iniciar a API
+# Inicia o servidor
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "80"]
