@@ -1,140 +1,161 @@
-from fastapi import FastAPI
+import os
+import re
+import json
+import time
+import csv
+from urllib.parse import urljoin, urlparse, parse_qs
+
 import requests
 from bs4 import BeautifulSoup
-import json
-import re
 
-app = FastAPI()
+BASE_URL = "https://www.petz.com.br/colecao/UT-outlet-petz"
+OUT_JSON = os.getenv("OUT_JSON", "petz_outlet.json")
+OUT_CSV = os.getenv("OUT_CSV", "petz_outlet.csv")
+SLEEP_SEC = float(os.getenv("SLEEP_SEC", "1.2"))
+MAX_PAGES = int(os.getenv("MAX_PAGES", "50"))  # limite de segurança
 
-# --- SUA CHAVE AQUI ---
-API_KEY = "cf26a5bf4dba51e058af2258d6eb4b4f" 
-# ----------------------
+HEADERS = {
+    "User-Agent": os.getenv(
+        "USER_AGENT",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+    "Connection": "keep-alive",
+}
 
-@app.get("/")
-def home():
-    return {"status": "Robô Petz Outlet (Render JS) Online ⚡"}
+session = requests.Session()
+session.headers.update(HEADERS)
+session.timeout = 25
 
-@app.get("/scrape")
-def rodar_robo():
-    url_alvo = "https://www.petz.com.br/colecao/UT-outlet-petz"
-    
-    print(f"Iniciando raspagem com RENDER: {url_alvo}")
-    
-    payload = {
-        'api_key': API_KEY, 
-        'url': url_alvo, 
-        'country_code': 'br',
-        'device_type': 'desktop', 
-        'premium': 'true',        
-        'render': 'true' # OBRIGATÓRIO: Liga o JavaScript para carregar os produtos
-    }
 
+def normalize_price(text: str):
+    if not text:
+        return None
+    t = text.strip()
+    # pega algo tipo "R$ 19,90" / "19,90"
+    m = re.search(r"(\d{1,3}(\.\d{3})*,\d{2})", t)
+    if not m:
+        return None
+    val = m.group(1).replace(".", "").replace(",", ".")
     try:
-        # Timeout aumentado para 90s porque renderizar demora mais
-        r = requests.get('http://api.scraperapi.com', params=payload, timeout=90)
-        
-        if r.status_code != 200:
-            return [{"erro": f"Erro API: {r.status_code}", "msg": r.text}]
+        return float(val)
+    except:
+        return None
 
-        soup = BeautifulSoup(r.text, 'html.parser')
-        lista_produtos = []
-        
-        # --- ESTRATÉGIA 1: TENTAR JSON-LD (Geralmente aparece com render=true) ---
-        scripts = soup.find_all('script', type='application/ld+json')
-        for script in scripts:
-            try:
-                dados = json.loads(script.string)
-                if isinstance(dados, dict) and dados.get('@type') == 'ItemList':
-                    items = dados.get('itemListElement', [])
-                    for item in items:
-                        produto = item.get('item', {})
-                        nome = produto.get('name')
-                        url = produto.get('url')
-                        img = produto.get('image', '')
-                        if isinstance(img, list): img = img[0]
-                        
-                        oferta = produto.get('offers', {})
-                        preco = oferta.get('price')
-                        if preco: preco = f"R$ {str(preco).replace('.', ',')}"
-                        else: preco = "Ver no site"
 
-                        if url and not url.startswith('http'):
-                            url = "https://www.petz.com.br" + url
+def extract_from_html(html: str, page_url: str):
+    soup = BeautifulSoup(html, "lxml")
 
-                        if nome and url:
-                            lista_produtos.append({
-                                "nome": nome,
-                                "preco": str(preco),
-                                "link": url,
-                                "imagem": img,
-                                "origem": "JSON"
-                            })
-            except:
-                continue
+    products = []
 
-        # --- ESTRATÉGIA 2: SCANNER UNIVERSAL (Se o JSON falhar) ---
-        # Ignora classes CSS e busca por links de produtos (/produto/)
-        if not lista_produtos:
-            print("JSON falhou, ativando Scanner Universal...")
-            links = soup.select('a[href*="/produto/"]')
-            ids_processados = set()
+    # Estratégia 1: procurar links de produto e tentar subir pro card
+    # (seletores podem variar; por isso tentamos múltiplos padrões)
+    candidate_links = soup.select('a[href*="/produto/"], a[href*="/produtos/"], a[href*="/p/"]')
 
-            for link in links:
-                try:
-                    href = link.get('href')
-                    if not href: continue
-                    
-                    # Evita duplicatas
-                    if href in ids_processados: continue
-                    ids_processados.add(href)
-                    
-                    full_link = "https://www.petz.com.br" + href if not href.startswith('http') else href
-                    
-                    # Sobe na árvore HTML para achar o bloco do produto
-                    # Tenta achar o container pai (div ou li)
-                    card = link.find_parent('div')
-                    if not card: card = link.find_parent('li')
-                    if not card: continue
+    seen = set()
+    for a in candidate_links:
+        href = a.get("href")
+        if not href:
+            continue
+        full_link = urljoin(page_url, href)
+        if full_link in seen:
+            continue
+        seen.add(full_link)
 
-                    # 1. Nome (Busca imagem com alt ou texto do link)
-                    nome = "Produto Petz"
-                    img_tag = card.find('img')
-                    if img_tag and img_tag.get('alt'):
-                        nome = img_tag.get('alt')
-                    else:
-                        h3 = card.find(['h3', 'h2', 'h1'])
-                        if h3: nome = h3.get_text(strip=True)
-                        else: nome = link.get_text(strip=True)
+        # tenta achar um "card" acima do link
+        card = a
+        for _ in range(6):
+            if card and getattr(card, "name", None) in ("article", "li", "div"):
+                cls = " ".join(card.get("class", [])).lower()
+                if any(k in cls for k in ["product", "produto", "card", "shelf", "item"]):
+                    break
+            card = card.parent
 
-                    # 2. Preço (Regex para achar R$ XX,XX em qualquer lugar do card)
-                    preco = "Ver no site"
-                    texto_completo = card.get_text()
-                    match_preco = re.search(r'R\$\s?(\d+[\.,]\d{2})', texto_completo)
-                    if match_preco:
-                        preco = match_preco.group(0)
+        title = None
+        price = None
+        old_price = None
+        image = None
 
-                    # 3. Imagem
-                    imagem = ""
-                    if img_tag:
-                        imagem = img_tag.get('src') or img_tag.get('data-src')
+        # título
+        if a.get_text(strip=True):
+            title = a.get_text(" ", strip=True)
 
-                    # Só salva se tiver cara de produto (preço ou imagem)
-                    if len(nome) > 3 and ("R$" in preco or imagem):
-                        lista_produtos.append({
-                            "nome": nome,
-                            "preco": preco,
-                            "link": full_link,
-                            "imagem": imagem,
-                            "origem": "Visual Universal"
-                        })
-                except:
-                    continue
+        if card:
+            # imagem
+            img = card.select_one("img")
+            if img:
+                image = img.get("src") or img.get("data-src") or img.get("data-lazy") or img.get("srcset")
+                if image and " " in image and "http" in image:
+                    # se for srcset, pega o primeiro
+                    image = image.split()[0]
 
-        if not lista_produtos:
-            # Debug: Mostra o título para sabermos se a página carregou
-            return [{"erro": "Nenhum produto encontrado.", "titulo": soup.title.string if soup.title else "Sem Título"}]
+            # preços (pega vários textos e tenta extrair números)
+            text = card.get_text(" ", strip=True)
+            # tenta achar 2 preços (promo e original)
+            found = re.findall(r"(\d{1,3}(?:\.\d{3})*,\d{2})", text)
+            if found:
+                # heurística: o menor costuma ser o atual, maior o antigo
+                nums = []
+                for f in found:
+                    try:
+                        nums.append(float(f.replace(".", "").replace(",", ".")))
+                    except:
+                        pass
+                if nums:
+                    nums_sorted = sorted(set(nums))
+                    price = nums_sorted[0]
+                    if len(nums_sorted) > 1:
+                        old_price = nums_sorted[-1]
 
-        return lista_produtos[:50]
+        if not title:
+            continue
 
-    except Exception as e:
-        return [{"erro": f"Erro interno: {str(e)}"}]
+        products.append({
+            "title": title,
+            "price": price,
+            "old_price": old_price,
+            "link": full_link,
+            "image": image,
+            "source": page_url,
+        })
+
+    # remove “falsos positivos” (links que não parecem produto)
+    cleaned = []
+    for p in products:
+        # exige alguma indicação de preço OU imagem OU caminho típico
+        if (p["price"] is not None) or (p["image"]) or ("/produto" in p["link"] or "/p/" in p["link"]):
+            cleaned.append(p)
+
+    # dedupe por link
+    uniq = {}
+    for p in cleaned:
+        uniq[p["link"]] = p
+    return list(uniq.values())
+
+
+def guess_next_page_url(current_url: str, html: str):
+    soup = BeautifulSoup(html, "lxml")
+
+    # tenta achar botão "próximo"
+    for sel in [
+        'a[rel="next"]',
+        'a[aria-label*="Próxima"]',
+        'a[aria-label*="próxima"]',
+        'a:contains("Próxima")',
+        'a:contains("proxima")',
+    ]:
+        try:
+            a = soup.select_one(sel)
+        except Exception:
+            a = None
+        if a and a.get("href"):
+            return urljoin(current_url, a["href"])
+
+    # fallback: tenta usar padrão ?page=
+    parsed = urlparse(current_url)
+    qs = parse_qs(parsed.query)
+    page = int(qs.get("page", ["1"])[0]) if "page" in qs else 1
+    next_page = page + 1
+
+    if "
