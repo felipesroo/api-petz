@@ -15,7 +15,7 @@ def home():
 
 @app.get("/scrape")
 def rodar_robo():
-    url_alvo = "https://www.amazon.com.br/deals?ref_=nav_cs_gb"
+    url_alvo = "https://www.amazon.com.br/deals?ref_=nav_cs_gb&promotionsSearchLastSeenAsin=B01JPOLKDW&promotionsSearchStartIndex=0&promotionsSearchPageSize=60"
     
     print(f"Caçando ofertas em: {url_alvo}")
     
@@ -133,3 +133,4 @@ def rodar_robo():
 
     except Exception as e:
         return [{"erro": f"Erro interno: {str(e)}"}]
+
