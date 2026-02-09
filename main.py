@@ -7,7 +7,7 @@ import re
 app = FastAPI()
 
 # --- SUA CHAVE AQUI ---
-API_KEY = "cf26a5bf4dba51e058af2258d6eb4b4f" 
+API_KEY = "SUA_CHAVE_DA_SCRAPERAPI_AQUI" 
 # ----------------------
 
 @app.get("/")
@@ -21,14 +21,14 @@ def rodar_robo():
     
     print(f"Iniciando raspagem na Outlet: {url_alvo}")
     
-    # Configuração para Petz (render=true ajuda a carregar o JSON dinâmico se precisar)
+    # Configuração para Petz
     payload = {
         'api_key': API_KEY, 
         'url': url_alvo, 
         'country_code': 'br',
-        'device_type': 'desktop', # Desktop costuma trazer mais dados no JSON da Petz
-        'premium': 'true',        # Ajuda a evitar bloqueios de IP
-        'render': 'true'         # Tente false primeiro (mais rápido). Se vier vazio, mude para true.
+        'device_type': 'desktop', 
+        'premium': 'true',        
+        'render': 'false'         
     }
 
     try:
@@ -41,7 +41,6 @@ def rodar_robo():
         lista_produtos = []
         
         # --- ESTRATÉGIA 1: JSON-LD (Dados Ocultos) ---
-        # A Petz organiza tudo bonitinho aqui para o Google
         scripts = soup.find_all('script', type='application/ld+json')
         
         print(f"Scripts JSON encontrados: {len(scripts)}")
@@ -50,20 +49,17 @@ def rodar_robo():
             try:
                 dados = json.loads(script.string)
                 
-                # Procura pela lista de produtos (ItemList)
                 if isinstance(dados, dict) and dados.get('@type') == 'ItemList':
                     items = dados.get('itemListElement', [])
                     
                     for item in items:
                         produto = item.get('item', {})
                         
-                        # Extração Direta do JSON
                         nome = produto.get('name')
                         url = produto.get('url')
                         imagem = produto.get('image', '')
-                        if isinstance(imagem, list): imagem = imagem[0] # Pega a primeira foto
+                        if isinstance(imagem, list): imagem = imagem[0] 
                         
-                        # Preço (Geralmente em 'offers')
                         oferta = produto.get('offers', {})
                         preco_num = oferta.get('price')
                         if preco_num:
@@ -71,7 +67,6 @@ def rodar_robo():
                         else:
                             preco = "Ver no site"
 
-                        # Correção de URL relativa
                         if url and not url.startswith('http'):
                             url = "https://www.petz.com.br" + url
 
@@ -87,7 +82,6 @@ def rodar_robo():
                 continue
 
         # --- ESTRATÉGIA 2: VARREDURA VISUAL (Fallback) ---
-        # Se o JSON falhar, usamos a técnica de "varrer links" que aprendemos na Amazon
         if not lista_produtos:
             print("JSON vazio, ativando modo visual...")
             links = soup.select('a[href*="/produto/"]')
@@ -102,7 +96,6 @@ def rodar_robo():
                     
                     full_link = "https://www.petz.com.br" + href if not href.startswith('http') else href
                     
-                    # Sobe para achar o Card
                     card = link.find_parent('div', class_=lambda x: x and ('card' in x or 'product' in x))
                     if not card: card = link.find_parent('li')
                     
@@ -119,5 +112,34 @@ def rodar_robo():
 
                     # Preço
                     preco = "Ver no site"
-                    preco_tag = card.find(string=re.compile(r'R\$\s?
+                    # A LINHA QUE DEU ERRO ESTÁ AQUI EMBAIXO, AGORA COMPLETA:
+                    preco_tag = card.find(string=re.compile(r'R\$\s?[\d,]+'))
+                    
+                    if preco_tag:
+                        match = re.search(r'R\$\s?[\d\.,]+', preco_tag)
+                        if match: preco = match.group(0)
 
+                    # Imagem
+                    imagem = ""
+                    img_tag = card.find('img')
+                    if img_tag: 
+                        imagem = img_tag.get('src') or img_tag.get('data-src')
+
+                    if "R$" in preco:
+                        lista_produtos.append({
+                            "nome": nome,
+                            "preco": preco,
+                            "link": full_link,
+                            "imagem": imagem,
+                            "origem": "Visual"
+                        })
+                except:
+                    continue
+
+        if not lista_produtos:
+            return [{"erro": "Nenhum produto encontrado.", "titulo": soup.title.string if soup.title else "Sem Título"}]
+
+        return lista_produtos[:50]
+
+    except Exception as e:
+        return [{"erro": f"Erro interno: {str(e)}"}]
