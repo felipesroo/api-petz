@@ -7,7 +7,7 @@ import re
 app = FastAPI()
 
 # --- SUA CHAVE AQUI ---
-API_KEY = "SUA_CHAVE_DA_SCRAPERAPI_AQUI" 
+API_KEY = "cf26a5bf4dba51e058af2258d6eb4b4f" 
 # ----------------------
 
 @app.get("/")
@@ -143,3 +143,4 @@ def rodar_robo():
 
     except Exception as e:
         return [{"erro": f"Erro interno: {str(e)}"}]
+
