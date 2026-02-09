@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 import requests
 from bs4 import BeautifulSoup
+import json
 import re
-import time
 
 app = FastAPI()
 
@@ -12,139 +12,111 @@ API_KEY = "cf26a5bf4dba51e058af2258d6eb4b4f"
 
 @app.get("/")
 def home():
-    return {"status": "Robô Ofertas do Dia Online 🏷️"}
+    return {"status": "Robô Petz Outlet Online 🐶"}
 
 @app.get("/scrape")
 def rodar_robo():
-    # URL das Ofertas do Dia
-    base_url = "https://www.amazon.com.br/s?k=ofertas+do+dia&__mk_pt_BR=%C3%85M%C3%85%C5%BD%C3%95%C3%91&crid=2ZJ0E5VVQA848&sprefix=ofertas+do+di%2Caps%2C234&ref=nb_sb_noss_2"
+    # URL da Outlet Petz
+    url_alvo = "https://www.petz.com.br/colecao/UT-outlet-petz"
     
-    # Quantidade de páginas para ler
-    MAX_PAGINAS = 3
+    print(f"Iniciando raspagem na Outlet: {url_alvo}")
     
-    lista_global = []
-    print(f"Iniciando busca de 'Ofertas do Dia' ({MAX_PAGINAS} Páginas)...")
+    # Configuração para Petz (render=true ajuda a carregar o JSON dinâmico se precisar)
+    payload = {
+        'api_key': API_KEY, 
+        'url': url_alvo, 
+        'country_code': 'br',
+        'device_type': 'desktop', # Desktop costuma trazer mais dados no JSON da Petz
+        'premium': 'true',        # Ajuda a evitar bloqueios de IP
+        'render': 'false'         # Tente false primeiro (mais rápido). Se vier vazio, mude para true.
+    }
 
-    for pagina in range(1, MAX_PAGINAS + 1):
-        print(f"--- Processando Página {pagina} ---")
+    try:
+        r = requests.get('http://api.scraperapi.com', params=payload, timeout=60)
         
-        # Lógica de Paginação
-        if pagina == 1:
-            url_atual = base_url
-        else:
-            url_atual = f"{base_url}&page={pagina}"
-        
-        payload = {
-            'api_key': API_KEY, 
-            'url': url_atual, 
-            'country_code': 'br',
-            'device_type': 'mobile', 
-            'premium': 'true',       
-            'render': 'false'        
-        }
+        if r.status_code != 200:
+            return [{"erro": f"Erro API: {r.status_code}", "msg": r.text}]
 
-        try:
-            r = requests.get('http://api.scraperapi.com', params=payload, timeout=60)
-            
-            if r.status_code != 200:
-                print(f"Pulo na pág {pagina} (Erro {r.status_code})")
+        soup = BeautifulSoup(r.text, 'html.parser')
+        lista_produtos = []
+        
+        # --- ESTRATÉGIA 1: JSON-LD (Dados Ocultos) ---
+        # A Petz organiza tudo bonitinho aqui para o Google
+        scripts = soup.find_all('script', type='application/ld+json')
+        
+        print(f"Scripts JSON encontrados: {len(scripts)}")
+        
+        for script in scripts:
+            try:
+                dados = json.loads(script.string)
+                
+                # Procura pela lista de produtos (ItemList)
+                if isinstance(dados, dict) and dados.get('@type') == 'ItemList':
+                    items = dados.get('itemListElement', [])
+                    
+                    for item in items:
+                        produto = item.get('item', {})
+                        
+                        # Extração Direta do JSON
+                        nome = produto.get('name')
+                        url = produto.get('url')
+                        imagem = produto.get('image', '')
+                        if isinstance(imagem, list): imagem = imagem[0] # Pega a primeira foto
+                        
+                        # Preço (Geralmente em 'offers')
+                        oferta = produto.get('offers', {})
+                        preco_num = oferta.get('price')
+                        if preco_num:
+                            preco = f"R$ {str(preco_num).replace('.', ',')}"
+                        else:
+                            preco = "Ver no site"
+
+                        # Correção de URL relativa
+                        if url and not url.startswith('http'):
+                            url = "https://www.petz.com.br" + url
+
+                        if nome and url:
+                            lista_produtos.append({
+                                "nome": nome,
+                                "preco": preco,
+                                "link": url,
+                                "imagem": imagem,
+                                "origem": "JSON"
+                            })
+            except:
                 continue
 
-            soup = BeautifulSoup(r.text, 'html.parser')
+        # --- ESTRATÉGIA 2: VARREDURA VISUAL (Fallback) ---
+        # Se o JSON falhar, usamos a técnica de "varrer links" que aprendemos na Amazon
+        if not lista_produtos:
+            print("JSON vazio, ativando modo visual...")
+            links = soup.select('a[href*="/produto/"]')
             
-            # Procura os containers de resultado de busca
-            cards = soup.select('div[data-component-type="s-search-result"]')
+            ids_processados = set()
             
-            # Backup: Se não achar os containers, procura links diretos
-            if not cards:
-                links = soup.select('a[href*="/dp/"]')
-                cards = []
-                seen_cards = set()
-                for l in links:
-                    pai = l.find_parent('div')
-                    if pai and pai not in seen_cards:
-                         cards.append(pai)
-                         seen_cards.add(pai)
-
-            print(f"  > Itens encontrados na pág {pagina}: {len(cards)}")
-            
-            novos = 0
-            ids_vistos = set()
-
-            for card in cards:
+            for link in links:
                 try:
+                    href = link.get('href')
+                    if not href or href in ids_processados: continue
+                    ids_processados.add(href)
+                    
+                    full_link = "https://www.petz.com.br" + href if not href.startswith('http') else href
+                    
+                    # Sobe para achar o Card
+                    card = link.find_parent('div', class_=lambda x: x and ('card' in x or 'product' in x))
+                    if not card: card = link.find_parent('li')
+                    
                     if not card: continue
 
-                    # 1. Link e ID do Produto
-                    link_tag = card.find('a', href=re.compile(r'/dp/'))
-                    if not link_tag: continue
-                    
-                    href = link_tag.get('href')
-                    match = re.search(r'/dp/([A-Z0-9]{10})', href)
-                    if not match: continue
-                    prod_id = match.group(1)
-
-                    if prod_id in ids_vistos: continue
-                    ids_vistos.add(prod_id)
-                    
-                    if any(p['link'].endswith(prod_id) for p in lista_global): continue
-
-                    full_link = f"https://www.amazon.com.br/dp/{prod_id}"
-
-                    # 2. Nome
-                    nome = "Oferta Amazon"
-                    img = card.find('img')
-                    h2 = card.find('h2')
-                    
-                    if h2: 
-                        nome = h2.get_text(strip=True)
-                    elif img and img.get('alt'):
-                        nome = img.get('alt')
-
-                    # 3. Preço
-                    preco = "Ver no site"
-                    price_tag = card.select_one('.a-price .a-offscreen')
-                    
-                    if price_tag:
-                        preco = price_tag.get_text(strip=True)
+                    # Nome
+                    nome = "Produto Petz"
+                    nome_tag = card.find(['h3', 'h2', 'span'], class_=lambda x: x and 'name' in x)
+                    if nome_tag: 
+                        nome = nome_tag.get_text(strip=True)
                     else:
-                        whole = card.select_one('.a-price-whole')
-                        frac = card.select_one('.a-price-fraction')
-                        if whole:
-                            v = whole.get_text(strip=True).replace('.', '')
-                            c = frac.get_text(strip=True) if frac else "00"
-                            preco = f"R$ {v},{c}"
+                        img = card.find('img')
+                        if img and img.get('alt'): nome = img.get('alt')
 
-                    # 4. Imagem
-                    imagem = img.get('src') if img else ""
-                    
-                    # 5. Desconto
-                    desconto = ""
-                    texto_card = card.get_text().lower()
-                    match_desc = re.search(r'(\d+)%\s?(off|de desconto)', texto_card)
-                    if match_desc:
-                        desconto = f"-{match_desc.group(1)}%"
-
-                    if "R$" in preco:
-                        lista_global.append({
-                            "pagina": pagina,
-                            "nome": nome,
-                            "preco": preco,
-                            "desconto": desconto,
-                            "link": full_link,
-                            "imagem": imagem
-                        })
-                        novos += 1
-
-                except:
-                    continue
-            
-            print(f"  > Produtos válidos salvos: {novos}")
-
-        except Exception as e:
-            print(f"Erro ao processar página {pagina}: {e}")
-
-    if not lista_global:
-        return [{"erro": "Nenhum produto encontrado. Verifique se o timeout do n8n é de 120s."}]
-
-    return lista_global
+                    # Preço
+                    preco = "Ver no site"
+                    preco_tag = card.find(string=re.compile(r'R\$\s?
