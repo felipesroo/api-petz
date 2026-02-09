@@ -1,117 +1,112 @@
 from fastapi import FastAPI
 import requests
 from bs4 import BeautifulSoup
+import re
 
 app = FastAPI()
 
-# --- COLOQUE SUA CHAVE AQUI ---
-API_KEY = "cf26a5bf4dba51e058af2258d6eb4b4f"
-# ------------------------------
+# --- SUA CHAVE AQUI ---
+API_KEY = "SUA_CHAVE_DA_SCRAPERAPI_AQUI" 
+# ----------------------
 
 @app.get("/")
 def home():
-    return {"status": "Robô Amazon Mobile V2 Online 📦"}
+    return {"status": "Robô Amazon Universal Online 🌎"}
 
 @app.get("/scrape")
 def rodar_robo():
-    print("Iniciando raspagem Amazon Mobile...")
-    
+    # DICA: Tente mudar essa URL para uma categoria específica para ver mais produtos!
+    # Ex: https://www.amazon.com.br/gp/bestsellers/books/
     url_alvo = "https://www.amazon.com.br/gp/bestsellers/?ref_=nav_cs_bestsellers"
+    
+    print(f"Iniciando raspagem em: {url_alvo}")
     
     payload = {
         'api_key': API_KEY, 
         'url': url_alvo, 
-        'country_code': 'br', 
-        'device_type': 'mobile', # TRUQUE: Acessar como celular
-        'premium': 'true',       # TRUQUE: Usar IPs residenciais premium
+        'country_code': 'br',
+        'device_type': 'mobile', # Mobile costuma ser mais leve
     }
 
     try:
-        # Timeout maior porque IPs premium demoram um pouco mais
-        r = requests.get('http://api.scraperapi.com', params=payload, timeout=90)
+        r = requests.get('http://api.scraperapi.com', params=payload, timeout=60)
         
         if r.status_code != 200:
-            return [{"erro": f"Erro ScraperAPI: {r.status_code}", "msg": r.text}]
+            return [{"erro": f"Erro API: {r.status_code}", "msg": r.text}]
 
         soup = BeautifulSoup(r.text, 'html.parser')
         lista_produtos = []
         
-        # ESTRATÉGIA MOBILE:
-        # No mobile, a Amazon usa uma lista vertical.
-        # Procuramos por containers de itens (divs com classe 'zg-item')
-        # Ou procuramos links genéricos de produtos
+        # ESTRATÉGIA UNIVERSAL (Varrer Links)
+        # Em vez de procurar divs específicas, procuramos QUALQUER link de produto
+        # O padrão da Amazon é amazon.com.br/.../dp/CÓDIGO
+        links_produtos = soup.select('a[href*="/dp/"]')
         
-        # Tenta pegar os cards pelo Grid padrão de Bestsellers
-        cards = soup.select('div#gridItemRoot, div.zg-grid-general-faceout, div.p13n-sc-uncoverable-faceout')
+        print(f"Links brutos encontrados: {len(links_produtos)}")
         
-        if not cards:
-             # Se falhar, tenta pegar qualquer link que tenha /dp/ (padrão de produto Amazon)
-             print("Seletores de grid falharam, tentando links diretos...")
-             links_produtos = soup.select('a[href*="/dp/"]')
-             # Transforma links em "cards" falsos para processar igual
-             cards = [l.find_parent('div') for l in links_produtos if l.find_parent('div')]
+        links_visitados = set()
 
-        print(f"Possíveis produtos encontrados: {len(cards)}")
-
-        produtos_unicos = set()
-
-        for card in cards:
-            if not card: continue
+        for link in links_produtos:
             try:
-                # 1. Título (Pode estar em várias tags diferentes)
-                nome_tag = card.select_one('span.p13n-sc-truncate, div.p13n-sc-truncate-desktop-type2, span._cDEzb_p13n-sc-css-line-clamp-3_g3dy1')
+                href = link.get('href')
                 
-                # Se não achou tag de nome, tenta achar qualquer imagem e pegar o 'alt'
-                if not nome_tag:
-                    img = card.select_one('img')
-                    nome = img.get('alt') if img else "Sem Nome"
-                else:
-                    nome = nome_tag.get_text(strip=True)
-
-                # 2. Link
-                link_tag = card.select_one('a.a-link-normal')
-                if not link_tag: 
-                    # Se o próprio card for um link (comum no mobile)
-                    if card.name == 'a': link_tag = card
-                    else: continue
-                
-                href = link_tag.get('href')
+                # Limpeza do Link (Pega só até o código do produto para evitar duplicatas)
                 if not href: continue
+                match_id = re.search(r'/dp/([A-Z0-9]{10})', href)
+                if not match_id: continue
+                prod_id = match_id.group(1)
                 
-                full_link = "https://www.amazon.com.br" + href if not href.startswith('http') else href
+                if prod_id in links_visitados: continue
+                links_visitados.add(prod_id)
+                
+                full_link = f"https://www.amazon.com.br/dp/{prod_id}"
 
-                # Evita duplicatas
-                if full_link in produtos_unicos: continue
-                produtos_unicos.add(full_link)
+                # Tenta achar o Nome e Preço subindo na árvore do HTML
+                # (Procura no elemento pai do link)
+                card = link.find_parent('div', class_=lambda x: x and 'zg' in x) # Tenta achar o card pai
+                if not card:
+                    card = link.find_parent('li') # Tenta achar item de lista
+                if not card:
+                    card = link.find_parent('div') # Pega o div mais próximo
 
-                # 3. Preço
+                if not card: continue
+
+                # Extração de Nome
+                nome = "Nome não detectado"
+                img = card.find('img')
+                if img and img.get('alt'):
+                    nome = img.get('alt')
+                else:
+                    # Tenta pegar texto do próprio link ou vizinhos
+                    texto_card = card.get_text(" ", strip=True)
+                    if len(texto_card) > 5:
+                         # Pega os primeiros 50 caracteres como nome provisório se não tiver imagem
+                         nome = texto_card[:50] + "..."
+
+                # Extração de Preço
                 preco = "Ver no site"
-                # Amazon adora mudar essa classe. Buscamos classes que contenham 'price'
-                preco_tag = card.select_one('span._cDEzb_p13n-sc-price_3mJ9Z, span.p13n-sc-price, span.a-color-price')
-                if preco_tag:
-                    preco = preco_tag.get_text(strip=True)
+                # Procura padrão de preço (R$ XX,XX) no texto do cartão inteiro
+                texto_completo = card.get_text()
+                match_preco = re.search(r'R\$\s?(\d+[\.,]\d{2})', texto_completo)
+                if match_preco:
+                    preco = match_preco.group(0)
 
-                # 4. Imagem
+                # Extração de Imagem
                 imagem = ""
-                img_tag = card.select_one('img')
-                if img_tag:
-                    imagem = img_tag.get('src')
+                if img: imagem = img.get('src')
 
-                if nome and len(nome) > 3:
-                    lista_produtos.append({
-                        "nome": nome,
-                        "preco": preco,
-                        "link": full_link,
-                        "imagem": imagem
-                    })
+                lista_produtos.append({
+                    "nome": nome,
+                    "preco": preco,
+                    "link": full_link,
+                    "imagem": imagem
+                })
 
-            except Exception:
+            except:
                 continue
 
         if not lista_produtos:
-            # DEBUG: Mostra o título para saber se fomos bloqueados
-            titulo = soup.title.get_text() if soup.title else "Sem Título"
-            return [{"erro": "Bloqueio Amazon ou Layout mudou", "titulo_pagina": titulo, "html_inicio": str(soup)[:200]}]
+            return [{"erro": "Nenhum produto encontrado. Tente uma URL de categoria específica.", "titulo": soup.title.string}]
 
         return lista_produtos[:50]
 
