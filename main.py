@@ -2,100 +2,118 @@ from fastapi import FastAPI
 import requests
 from bs4 import BeautifulSoup
 import json
+import time
 
 app = FastAPI()
 
-# --- COLOQUE SUA CHAVE AQUI ---
-API_KEY = "cf26a5bf4dba51e058af2258d6eb4b4f"
-# ------------------------------
+# --- SUA CHAVE AQUI ---
+API_KEY = "SUA_CHAVE_DA_SCRAPERAPI_AQUI" 
+# ----------------------
 
 @app.get("/")
 def home():
-    return {"status": "Robô Petz via API Online 🚀"}
+    return {"status": "Robô Petz Híbrido Online 🚀"}
 
 @app.get("/scrape")
 def rodar_robo():
-    print("Iniciando raspagem via ScraperAPI...")
+    print("Iniciando raspagem...")
     
-    # URL que queremos raspar
+    # URL da categoria
     url_alvo = "https://www.petz.com.br/cachorro/racao/racao-seca"
     
-    # Monta o pedido para o ScraperAPI
-    # render=true avisa que o site usa Javascript (importante para Petz)
+    # Configuração Otimizada do ScraperAPI
     payload = {
         'api_key': API_KEY, 
         'url': url_alvo, 
-        'render': 'true',
-        'country_code': 'br' # Usa IP do Brasil
+        'country_code': 'br', # IP Brasileiro
+        'render': 'false',    # DESLIGADO: Mais rápido e menos bugs visuais
+        'keep_headers': 'true' # Mantém nossos headers para parecer humano
+    }
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
 
     try:
-        # Faz o pedido (quem acessa a Petz é o ScraperAPI, não sua VPS)
-        r = requests.get('http://api.scraperapi.com', params=payload, timeout=60)
+        # 1. Faz o pedido
+        r = requests.get('http://api.scraperapi.com', params=payload, headers=headers, timeout=60)
         
         if r.status_code != 200:
-            return [{"erro": f"Falha na API: {r.status_code}", "detalhe": r.text}]
+            return [{"erro": f"Erro na API: {r.status_code}", "msg": r.text}]
 
-        # O ScraperAPI devolve o HTML prontinho
         soup = BeautifulSoup(r.text, 'html.parser')
-        
         lista_produtos = []
         
-        # Procura os cards (mesma lógica visual ou link)
-        # Tenta pegar todos os links de produtos
-        links = soup.select('a[href*="/produto/"]')
+        # 2. ESTRATÉGIA SNIPER: Buscar JSON-LD (Dados Estruturados)
+        # A Petz entrega os dados prontos para o Google neste script
+        scripts = soup.find_all('script', type='application/ld+json')
         
-        links_visitados = set()
-
-        for link_tag in links:
+        for script in scripts:
             try:
-                href = link_tag.get('href')
-                if not href: continue
-                
-                full_link = "https://www.petz.com.br" + href if not href.startswith('http') else href
-                
-                if full_link in links_visitados:
-                    continue
-                links_visitados.add(full_link)
+                dados = json.loads(script.string)
+                # Verifica se é uma lista de produtos
+                if isinstance(dados, dict) and dados.get('@type') == 'ItemList':
+                    items = dados.get('itemListElement', [])
+                    for item in items:
+                        produto = item.get('item', {})
+                        nome = produto.get('name')
+                        url = produto.get('url')
+                        
+                        # Preço e Imagem as vezes estão em locais diferentes no JSON
+                        oferta = produto.get('offers', {})
+                        preco = oferta.get('price', 'Ver no site') if isinstance(oferta, dict) else '0'
+                        imagem = produto.get('image', '')
+                        if isinstance(imagem, list): imagem = imagem[0]
 
-                # Pega o texto do link ou do pai
-                texto = link_tag.get_text(" ", strip=True)
-                if len(texto) < 5:
-                    parent = link_tag.find_parent()
-                    if parent:
-                        texto = parent.get_text(" ", strip=True)
+                        if url and not url.startswith('http'):
+                            url = "https://www.petz.com.br" + url
 
-                # Busca Preço (Simples procura por R$)
-                preco = "0"
-                if "R$" in texto:
-                    # Tenta limpar string para achar o preço
-                    partes = texto.split('R$')
-                    if len(partes) > 1:
-                        # Pega os primeiros caracteres depois do R$
-                        preco_sujo = partes[1].strip().split(' ')[0]
-                        preco = preco_sujo.replace(',', '.')
-
-                # Busca Imagem
-                img_tag = link_tag.find('img')
-                imagem = img_tag.get('src') if img_tag else ""
-
-                # Filtro básico de qualidade
-                if len(texto) > 10 and "R$" in texto:
-                    # Limpa o nome (tira o preço do nome)
-                    nome = texto.split('R$')[0].strip()
-                    
-                    lista_produtos.append({
-                        "nome": nome,
-                        "preco": preco,
-                        "link": full_link,
-                        "imagem": imagem
-                    })
-
+                        if nome:
+                            lista_produtos.append({
+                                "nome": nome,
+                                "preco": str(preco),
+                                "link": url,
+                                "imagem": imagem
+                            })
             except:
                 continue
-        
+
+        # 3. PLANO B: Se o JSON falhar, busca visualmente (Links)
         if not lista_produtos:
-            return [{"erro": "Nenhum produto encontrado", "html_sample": str(soup)[:200]}]
+            print("JSON vazio, tentando visual...")
+            links = soup.select('a[href*="/produto/"]')
+            links_unicos = set()
+            
+            for link in links:
+                href = link.get('href')
+                if href and href not in links_unicos:
+                    links_unicos.add(href)
+                    
+                    # Tenta achar o preço perto do link
+                    card = link.find_parent('div')
+                    texto_card = card.get_text() if card else link.get_text()
+                    
+                    if "R$" in texto_card:
+                        # Extrai preço grosseiramente
+                        preco = "R$ " + texto_card.split('R$')[1].split(' ')[0]
+                    else:
+                        preco = "Ver no site"
+                        
+                    lista_produtos.append({
+                        "nome": "Produto Detectado (Visual)",
+                        "preco": preco,
+                        "link": "https://www.petz.com.br" + href if not href.startswith('http') else href,
+                        "imagem": ""
+                    })
+
+        # DEBUG FINAL: Se ainda estiver vazio, mostra o Título da página para sabermos onde caiu
+        if not lista_produtos:
+            titulo = soup.title.string if soup.title else "Sem Título"
+            return [{
+                "erro": "Nenhum produto encontrado", 
+                "titulo_pagina": titulo, # Isso vai nos dizer se caiu em 'Block', 'Notify Me' ou outra coisa
+                "html_inicio": str(soup)[:300]
+            }]
 
         return lista_produtos[:50]
 
