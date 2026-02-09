@@ -16,7 +16,7 @@ def home():
 
 @app.get("/scrape")
 def rodar_robo():
-    # URL Exata das Ofertas do Dia
+    # URL das Ofertas do Dia
     base_url = "https://www.amazon.com.br/s?k=ofertas+do+dia&__mk_pt_BR=%C3%85M%C3%85%C5%BD%C3%95%C3%91&crid=2ZJ0E5VVQA848&sprefix=ofertas+do+di%2Caps%2C234&ref=nb_sb_noss_2"
     
     # Quantidade de páginas para ler
@@ -101,7 +101,7 @@ def rodar_robo():
                     elif img and img.get('alt'):
                         nome = img.get('alt')
 
-                    # 3. Preço (CORRIGIDO AQUI)
+                    # 3. Preço
                     preco = "Ver no site"
                     price_tag = card.select_one('.a-price .a-offscreen')
                     
@@ -112,7 +112,6 @@ def rodar_robo():
                         frac = card.select_one('.a-price-fraction')
                         if whole:
                             v = whole.get_text(strip=True).replace('.', '')
-                            # A LINHA QUE ESTAVA DANDO ERRO AGORA ESTÁ COMPLETA ABAIXO:
                             c = frac.get_text(strip=True) if frac else "00"
                             preco = f"R$ {v},{c}"
 
@@ -134,3 +133,18 @@ def rodar_robo():
                             "desconto": desconto,
                             "link": full_link,
                             "imagem": imagem
+                        })
+                        novos += 1
+
+                except:
+                    continue
+            
+            print(f"  > Produtos válidos salvos: {novos}")
+
+        except Exception as e:
+            print(f"Erro ao processar página {pagina}: {e}")
+
+    if not lista_global:
+        return [{"erro": "Nenhum produto encontrado. Verifique se o timeout do n8n é de 120s."}]
+
+    return lista_global
