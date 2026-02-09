@@ -1,112 +1,103 @@
 from fastapi import FastAPI
-from playwright.async_api import async_playwright
+import requests
+from bs4 import BeautifulSoup
 import json
-import asyncio
 
 app = FastAPI()
 
+# --- COLOQUE SUA CHAVE AQUI ---
+API_KEY = "cf26a5bf4dba51e058af2258d6eb4b4f"
+# ------------------------------
+
 @app.get("/")
 def home():
-    return {"status": "Robô Petz Sniper Ativo 🎯"}
+    return {"status": "Robô Petz via API Online 🚀"}
 
 @app.get("/scrape")
-async def rodar_robo():
-    print("Iniciando modo Sniper (JSON-LD)...")
-    async with async_playwright() as p:
-        # Lança navegador VISÍVEL para você ver se está abrindo
-        # Se funcionar, depois você muda headless=True
-        browser = await p.chromium.launch(
-            headless=True, # Mude para False se quiser ver a mágica
-            args=[
-                '--no-sandbox', 
-                '--disable-setuid-sandbox',
-                '--disable-blink-features=AutomationControlled',
-                '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
-            ]
-        )
+def rodar_robo():
+    print("Iniciando raspagem via ScraperAPI...")
+    
+    # URL que queremos raspar
+    url_alvo = "https://www.petz.com.br/cachorro/racao/racao-seca"
+    
+    # Monta o pedido para o ScraperAPI
+    # render=true avisa que o site usa Javascript (importante para Petz)
+    payload = {
+        'api_key': API_KEY, 
+        'url': url_alvo, 
+        'render': 'true',
+        'country_code': 'br' # Usa IP do Brasil
+    }
+
+    try:
+        # Faz o pedido (quem acessa a Petz é o ScraperAPI, não sua VPS)
+        r = requests.get('http://api.scraperapi.com', params=payload, timeout=60)
         
-        context = await browser.new_context(viewport={'width': 1920, 'height': 1080})
-        page = await context.new_page()
+        if r.status_code != 200:
+            return [{"erro": f"Falha na API: {r.status_code}", "detalhe": r.text}]
 
-        # Camuflagem básica
-        await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-
+        # O ScraperAPI devolve o HTML prontinho
+        soup = BeautifulSoup(r.text, 'html.parser')
+        
         lista_produtos = []
-        try:
-            print("Acessando site...")
-            await page.goto("https://www.petz.com.br/cachorro/racao/racao-seca", timeout=60000)
-            
-            # Espera carregar
+        
+        # Procura os cards (mesma lógica visual ou link)
+        # Tenta pegar todos os links de produtos
+        links = soup.select('a[href*="/produto/"]')
+        
+        links_visitados = set()
+
+        for link_tag in links:
             try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
-            except:
-                pass
-
-            # ESTRATÉGIA SNIPER: Buscar dados estruturados (JSON-LD)
-            # A Petz geralmente coloca os produtos num script hidden para o Google
-            scripts = await page.query_selector_all('script[type="application/ld+json"]')
-            print(f"Scripts JSON encontrados: {len(scripts)}")
-            
-            for script in scripts:
-                try:
-                    conteudo = await script.inner_text()
-                    dados = json.loads(conteudo)
-                    
-                    # Procura por listas de produtos dentro do JSON
-                    if isinstance(dados, dict) and dados.get('@type') == 'ItemList':
-                        items = dados.get('itemListElement', [])
-                        for item in items:
-                            produto = item.get('item', {})
-                            # Extrai dados limpos
-                            nome = produto.get('name', 'Sem Nome')
-                            url = produto.get('url', '')
-                            # Preço as vezes vem em 'offers'
-                            oferta = produto.get('offers', {})
-                            preco = oferta.get('price', '0') if isinstance(oferta, dict) else '0'
-                            imagem = produto.get('image', '')
-                            
-                            # Corrige URL se for relativa
-                            if url and not url.startswith('http'):
-                                url = "https://www.petz.com.br" + url
-
-                            if nome and url:
-                                lista_produtos.append({
-                                    "nome": nome,
-                                    "preco": str(preco),
-                                    "link": url,
-                                    "imagem": imagem
-                                })
-                except:
-                    continue
-            
-            # PLANO B: Se o JSON falhar, tenta o seletor visual SUPER GENÉRICO
-            if len(lista_produtos) == 0:
-                print("JSON falhou, tentando visual...")
-                # Pega qualquer CARD que tenha preço
-                cards = await page.query_selector_all('div[class*="card"], li[class*="product"]')
+                href = link_tag.get('href')
+                if not href: continue
                 
-                for card in cards:
-                    texto = await card.inner_text()
-                    if "R$" in texto:
-                        # Pega o primeiro link que achar dentro do card
-                        link_el = await card.query_selector('a')
-                        link = await link_el.get_attribute('href') if link_el else ""
-                        if link:
-                            lista_produtos.append({
-                                "nome": "Produto Detectado (Visual)",
-                                "preco": "Ver no Site",
-                                "link": "https://www.petz.com.br" + link,
-                                "imagem": ""
-                            })
+                full_link = "https://www.petz.com.br" + href if not href.startswith('http') else href
+                
+                if full_link in links_visitados:
+                    continue
+                links_visitados.add(full_link)
 
-            if len(lista_produtos) == 0:
-                # DEBUG: Tira um print para você ver o que o robô está vendo
-                await page.screenshot(path="debug_petz.png")
-                titulo = await page.title()
-                return [{"erro": "Bloqueio Total. Verifique debug_petz.png", "titulo": titulo}]
+                # Pega o texto do link ou do pai
+                texto = link_tag.get_text(" ", strip=True)
+                if len(texto) < 5:
+                    parent = link_tag.find_parent()
+                    if parent:
+                        texto = parent.get_text(" ", strip=True)
 
-        except Exception as e:
-            return [{"erro": f"Erro fatal: {str(e)}"}]
-            
-        await browser.close()
+                # Busca Preço (Simples procura por R$)
+                preco = "0"
+                if "R$" in texto:
+                    # Tenta limpar string para achar o preço
+                    partes = texto.split('R$')
+                    if len(partes) > 1:
+                        # Pega os primeiros caracteres depois do R$
+                        preco_sujo = partes[1].strip().split(' ')[0]
+                        preco = preco_sujo.replace(',', '.')
+
+                # Busca Imagem
+                img_tag = link_tag.find('img')
+                imagem = img_tag.get('src') if img_tag else ""
+
+                # Filtro básico de qualidade
+                if len(texto) > 10 and "R$" in texto:
+                    # Limpa o nome (tira o preço do nome)
+                    nome = texto.split('R$')[0].strip()
+                    
+                    lista_produtos.append({
+                        "nome": nome,
+                        "preco": preco,
+                        "link": full_link,
+                        "imagem": imagem
+                    })
+
+            except:
+                continue
+        
+        if not lista_produtos:
+            return [{"erro": "Nenhum produto encontrado", "html_sample": str(soup)[:200]}]
+
         return lista_produtos[:50]
+
+    except Exception as e:
+        return [{"erro": f"Erro interno: {str(e)}"}]
