@@ -28,7 +28,7 @@ def rodar_robo():
         'country_code': 'br',
         'device_type': 'desktop', # Desktop costuma trazer mais dados no JSON da Petz
         'premium': 'true',        # Ajuda a evitar bloqueios de IP
-        'render': 'false'         # Tente false primeiro (mais rápido). Se vier vazio, mude para true.
+        'render': 'true'         # Tente false primeiro (mais rápido). Se vier vazio, mude para true.
     }
 
     try:
@@ -120,3 +120,4 @@ def rodar_robo():
                     # Preço
                     preco = "Ver no site"
                     preco_tag = card.find(string=re.compile(r'R\$\s?
+
